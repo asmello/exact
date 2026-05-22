@@ -21,6 +21,9 @@ result-*
 .env.local
 .env.*.local
 
+# Local Postgres data dir
+/.pgdata
+
 # Editor
 .DS_Store
 *.swp

@@ -5,7 +5,9 @@
 // view when the host unmounts.
 
 import { rust } from '@codemirror/lang-rust';
+import { syntaxHighlighting } from '@codemirror/language';
 import { EditorState } from '@codemirror/state';
+import { oneDarkHighlightStyle } from '@codemirror/theme-one-dark';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 
@@ -22,6 +24,7 @@ export function mount(host: HTMLElement, opts: MountOptions): () => void {
       history(),
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       rust(),
+      syntaxHighlighting(oneDarkHighlightStyle),
       EditorView.theme(
         {
           '&': { height: '100%', fontSize: '13px' },

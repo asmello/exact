@@ -24,11 +24,6 @@
 </script>
 
 <main class="mx-auto flex min-h-screen max-w-5xl flex-col gap-6 px-6 py-10">
-  <header class="flex items-baseline gap-3">
-    <h1 class="font-mono text-2xl font-semibold tracking-tight">exact</h1>
-    <span class="text-sm text-zinc-400">cycle-accurate Cortex-M judging — step-2 skeleton</span>
-  </header>
-
   <section class="flex flex-col gap-2">
     <label class="text-xs uppercase tracking-wider text-zinc-400" for="editor">Source</label>
     <div

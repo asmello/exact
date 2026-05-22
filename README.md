@@ -30,26 +30,37 @@ exact/
 nix develop
 # or `direnv allow` once for automatic shell activation
 
+# Copy .env.example to .env (or use direnv) and fill in DATABASE_URL,
+# GITHUB_CLIENT_ID/SECRET, SESSION_SECRET, etc. See `.env.example`.
+
+# Postgres (one-time setup, then `pg_ctl start`/`stop` to manage):
+initdb -D .pgdata
+pg_ctl -D .pgdata -l .pgdata/log start
+createdb exact
+
 # Backend
 cargo check --workspace
-cargo run -p exact-api
+cargo run -p exact-api          # runs migrations on startup
 
 # Frontend (separate terminal)
 cd frontend
 pnpm install
-pnpm dev          # http://127.0.0.1:5173, proxies /api to localhost:3000
+pnpm dev          # http://127.0.0.1:5173, proxies /api and /auth to :3000
 pnpm check        # svelte-check + tsc
 ```
 
-`pnpm dev`'s vite proxies `/api` to the api service on `:3000`, so the
-SPA and the backend can be developed independently.
+`pnpm dev`'s vite proxies `/api` and `/auth` to the api service on `:3000`,
+so the SPA and the backend can be developed against the same browser
+origin.
 
 ## Status
 
-Step 2 of the implementation plan: workspace + crate skeletons compile,
-the SvelteKit dev server serves an editor page with CodeMirror 6 + Rust
-syntax highlighting. No routes, no DB, no runner yet — those land in
-subsequent steps.
+Step 3 of the implementation plan: Postgres schema + GitHub OAuth
+sign-in + `/api/me`. Sessions are signed cookies (HMAC over user id),
+so restarts don't log users out. The editor page renders Rust with
+proper syntax highlighting via `@codemirror/theme-one-dark`.
+
+No problems, submissions, or runner yet — those land in steps 4–6.
 
 See the parent plan at `/Users/asm/.claude/plans/in-this-folder-i-shiny-hare.md`
 for the full implementation outline.
