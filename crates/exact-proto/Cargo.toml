@@ -1,0 +1,12 @@
+[package]
+name = "exact-proto"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Wire types shared between exact-api, exact-runner, and the frontend."
+
+[dependencies]
+base64 = "0.22"
+serde.workspace = true
+uuid.workspace = true

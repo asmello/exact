@@ -1,0 +1,28 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+/frontend/.svelte-kit
+/frontend/build
+/frontend/dist
+.vite
+
+# Nix direnv
+.direnv/
+result
+result-*
+
+# Env files (do NOT commit secrets)
+.env
+.env.local
+.env.*.local
+
+# Editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
