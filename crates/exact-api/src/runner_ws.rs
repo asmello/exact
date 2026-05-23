@@ -151,12 +151,19 @@ async fn run_socket(socket: WebSocket, state: AppState, runner_id: i64, device_i
 
     // Drain any ready submissions for this board.
     let pool = state.db.clone();
+    let events = state.events.clone();
     let board_str_owned = board_str(board);
     let drain_tx = tx.clone();
     let device_id_for_drain = device_id.clone();
     tokio::spawn(async move {
-        dispatcher::drain_ready_for_board(&pool, board_str_owned, &device_id_for_drain, &drain_tx)
-            .await;
+        dispatcher::drain_ready_for_board(
+            &pool,
+            &events,
+            board_str_owned,
+            &device_id_for_drain,
+            &drain_tx,
+        )
+        .await;
     });
 
     let writer = tokio::spawn(async move {
@@ -229,8 +236,6 @@ async fn handle_runner_msg(state: &AppState, device_id: &str, msg: RunnerToServe
             synthetic,
         } => {
             let (status_str, passed) = case_status_str(status);
-            // `passed` = correctness of the result; only meaningful for OK runs
-            // and once we've compared against expected_output below.
             let final_passed = match status {
                 CaseStatus::Ok => match expected_for(state, job_id, case_ord as i32).await {
                     Some(Some(exp)) => Some(exp == output),
@@ -239,6 +244,7 @@ async fn handle_runner_msg(state: &AppState, device_id: &str, msg: RunnerToServe
                 },
                 _ => Some(false),
             };
+            let effective_passed = final_passed.or(passed);
             if let Err(e) = db::insert_case_result(
                 &state.db,
                 db::NewCaseResult {
@@ -248,7 +254,7 @@ async fn handle_runner_msg(state: &AppState, device_id: &str, msg: RunnerToServe
                     exit_code: Some(exit_code as i32),
                     cycles: Some(cycles as i64),
                     output: Some(&output),
-                    passed: final_passed.or(passed),
+                    passed: effective_passed,
                     synthetic,
                 },
             )
@@ -256,6 +262,18 @@ async fn handle_runner_msg(state: &AppState, device_id: &str, msg: RunnerToServe
             {
                 warn!(error=%e, %job_id, case_ord, "insert case_result");
             }
+            state.events.publish(
+                job_id,
+                crate::events::SubmissionEvent::CaseResult {
+                    case_ord: case_ord as i32,
+                    status: status_str.into(),
+                    exit_code: Some(exit_code as i32),
+                    cycles: Some(cycles as i64),
+                    output: Some(output),
+                    passed: effective_passed,
+                    synthetic,
+                },
+            );
         }
         RunnerToServer::RunResult {
             job_id,
@@ -263,8 +281,19 @@ async fn handle_runner_msg(state: &AppState, device_id: &str, msg: RunnerToServe
             cclk_hz: _,
         } => {
             // Sum cycles + count pass/fail from case_results.
-            if let Err(e) = finalize_run(state, job_id).await {
-                warn!(error=%e, %job_id, "finalize run");
+            match finalize_run(state, job_id).await {
+                Ok(Some((total_cycles, passed, total_cases))) => {
+                    state.events.publish(
+                        job_id,
+                        crate::events::SubmissionEvent::Finalized {
+                            total_cycles,
+                            passed,
+                            total_cases,
+                        },
+                    );
+                }
+                Ok(None) => {}
+                Err(e) => warn!(error=%e, %job_id, "finalize run"),
             }
             info!(%job_id, ?overall, "RunResult");
         }
@@ -272,6 +301,9 @@ async fn handle_runner_msg(state: &AppState, device_id: &str, msg: RunnerToServe
             warn!(?job_id, %reason, "runner reported Error");
             if let Some(id) = job_id {
                 let _ = db::set_submission_failed(&state.db, id, &reason).await;
+                state
+                    .events
+                    .publish(id, crate::events::SubmissionEvent::Failed { log: reason });
             }
         }
     }
@@ -292,7 +324,10 @@ async fn expected_for(
     Some(c.expected_output)
 }
 
-async fn finalize_run(state: &AppState, submission_id: uuid::Uuid) -> anyhow::Result<()> {
+async fn finalize_run(
+    state: &AppState,
+    submission_id: uuid::Uuid,
+) -> anyhow::Result<Option<(Option<i64>, i32, i32)>> {
     let rows = db::list_case_results(&state.db, submission_id).await?;
     let total_cases = rows.len() as i32;
     let passed = rows.iter().filter(|r| r.passed.unwrap_or(false)).count() as i32;
@@ -302,7 +337,7 @@ async fn finalize_run(state: &AppState, submission_id: uuid::Uuid) -> anyhow::Re
         None
     };
     db::finalize_submission(&state.db, submission_id, total_cycles, passed, total_cases).await?;
-    Ok(())
+    Ok(Some((total_cycles, passed, total_cases)))
 }
 
 fn case_status_str(s: CaseStatus) -> (&'static str, Option<bool>) {

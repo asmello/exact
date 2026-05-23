@@ -9,9 +9,11 @@
     type Problem,
     type TestCase,
     type Submission,
+    type CaseResult,
     type Board
   } from '$lib/api';
-  import { b64ToHex } from '$lib/bytes';
+  import { b64ToHex, decodeOutputB64, type IoSpec } from '$lib/bytes';
+  import { renderMarkdown } from '$lib/markdown';
 
   const id = $derived(page.params.id ?? '');
   const shareToken = $derived(page.url.searchParams.get('t') ?? undefined);
@@ -26,6 +28,10 @@
   let submission = $state<Submission | null>(null);
   let submitting = $state(false);
   let submitError = $state<string | null>(null);
+
+  const ioSpec = $derived(problem?.io_spec as IoSpec | undefined);
+  const inputSpec = $derived(ioSpec?.input);
+  const outputSpec = $derived(ioSpec?.output);
 
   $effect(() => {
     void (async () => {
@@ -54,32 +60,108 @@
       initialDoc: problem.starter_code,
       onChange: (doc) => {
         source = doc;
+      },
+      onSubmit: () => {
+        void submit();
       }
     });
   });
+
+  let eventSource: EventSource | null = null;
 
   async function submit() {
     if (!problem || submitting) return;
     submitError = null;
     submitting = true;
+    // Close any prior stream from an earlier submission on this page.
+    eventSource?.close();
+    eventSource = null;
     try {
       const created = await submissions.create({
         problem_id: problem.id,
         source_code: source,
         board
       });
-      submission = await submissions.get(created.id);
-      // Poll until terminal status. Step 7 will replace with SSE.
-      while (submission && submission.status !== 'done' && submission.status !== 'failed') {
-        await new Promise((r) => setTimeout(r, 500));
-        submission = await submissions.get(created.id);
-      }
+      submission = created;
+      await new Promise<void>((resolve) => {
+        const es = new EventSource(`/api/submissions/${created.id}/events`);
+        eventSource = es;
+        const finish = () => {
+          es.close();
+          eventSource = null;
+          resolve();
+        };
+
+        es.addEventListener('snapshot', (ev) => {
+          submission = JSON.parse((ev as MessageEvent).data) as Submission;
+        });
+
+        es.addEventListener('status', (ev) => {
+          if (!submission) return;
+          const { status } = JSON.parse((ev as MessageEvent).data) as { status: Submission['status'] };
+          submission = { ...submission, status };
+        });
+
+        es.addEventListener('case_result', (ev) => {
+          if (!submission) return;
+          const cr = JSON.parse((ev as MessageEvent).data) as CaseResult & { kind?: string };
+          delete cr.kind;
+          const existing = submission.case_results ?? [];
+          const idx = existing.findIndex((c) => c.case_ord === cr.case_ord);
+          const next = idx >= 0 ? existing.with(idx, cr) : [...existing, cr];
+          next.sort((a, b) => a.case_ord - b.case_ord);
+          submission = { ...submission, case_results: next };
+        });
+
+        es.addEventListener('finalized', (ev) => {
+          if (!submission) return;
+          const { total_cycles, passed, total_cases } = JSON.parse((ev as MessageEvent).data) as {
+            total_cycles: number | null;
+            passed: number;
+            total_cases: number;
+          };
+          submission = {
+            ...submission,
+            status: 'done',
+            total_cycles,
+            passed,
+            total_cases,
+            finished_at: new Date().toISOString()
+          };
+          finish();
+        });
+
+        es.addEventListener('failed', (ev) => {
+          if (!submission) return;
+          const { log } = JSON.parse((ev as MessageEvent).data) as { log: string };
+          submission = {
+            ...submission,
+            status: 'failed',
+            build_log: log,
+            finished_at: new Date().toISOString()
+          };
+          finish();
+        });
+
+        es.addEventListener('error', () => {
+          // Network glitch / server restart. Close and resolve so the
+          // submit button releases; the user can refresh to re-check.
+          finish();
+        });
+      });
     } catch (e) {
       submitError = e instanceof ApiError ? `${e.status}: ${e.message}` : String(e);
     } finally {
       submitting = false;
     }
   }
+
+  // Clean up if the user navigates away mid-submission.
+  $effect(() => {
+    return () => {
+      eventSource?.close();
+    };
+  });
 </script>
 
 <main class="mx-auto flex min-h-screen max-w-5xl flex-col gap-6 px-6 py-10">
@@ -101,8 +183,10 @@
     <section class="flex flex-col gap-2">
       <span class="text-xs uppercase tracking-wider text-zinc-400">Description</span>
       <div
-        class="whitespace-pre-wrap rounded border border-zinc-800 bg-zinc-900/40 px-4 py-3 font-mono text-sm text-zinc-200"
-      >{problem.description_md}</div>
+        class="md rounded border border-zinc-800 bg-zinc-900/40 px-4 py-3 text-sm text-zinc-200"
+      >
+        {@html renderMarkdown(problem.description_md)}
+      </div>
     </section>
 
     <section class="flex flex-col gap-2">
@@ -184,7 +268,7 @@
                 {/if}
                 <span class="truncate text-zinc-400">
                   {#if r.output !== null}
-                    out: {b64ToHex(r.output) || '(empty)'}
+                    out: {decodeOutputB64(r.output, outputSpec) || '(empty)'}
                   {/if}
                 </span>
                 <span class="text-zinc-300">
@@ -228,9 +312,13 @@
                 {/if}
                 <span class="ml-auto text-zinc-500">weight {c.weight}</span>
               </div>
-              <div class="mt-1 text-zinc-400">in: {b64ToHex(c.input) || '(empty)'}</div>
+              <div class="mt-1 text-zinc-400">
+                in: {decodeOutputB64(c.input, inputSpec) || '(empty)'}
+              </div>
               {#if c.expected_output !== null}
-                <div class="text-zinc-400">out: {b64ToHex(c.expected_output)}</div>
+                <div class="text-zinc-400">
+                  out: {decodeOutputB64(c.expected_output, outputSpec)}
+                </div>
               {/if}
             </li>
           {/each}

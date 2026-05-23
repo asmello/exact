@@ -18,6 +18,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::events::EventBus;
 
 /// Build the AssignJob payload for `submission_id` and send it to `tx`.
 /// Atomically claims 'ready' → 'running' (binding the row to `device_id`)
@@ -86,6 +87,12 @@ pub async fn dispatch_or_queue(state: &AppState, submission_id: Uuid, board: Boa
         warn!(%submission_id, device_id=%entry.device_id, "runner channel closed mid-dispatch");
     } else {
         info!(%submission_id, device_id=%entry.device_id, "AssignJob queued");
+        state.events.publish(
+            submission_id,
+            crate::events::SubmissionEvent::Status {
+                status: "running".into(),
+            },
+        );
     }
 }
 
@@ -94,6 +101,7 @@ pub async fn dispatch_or_queue(state: &AppState, submission_id: Uuid, board: Boa
 /// runner's tx.
 pub async fn drain_ready_for_board(
     pool: &PgPool,
+    events: &EventBus,
     board: &str,
     device_id: &str,
     tx: &mpsc::UnboundedSender<ServerToRunner>,
@@ -117,6 +125,12 @@ pub async fn drain_ready_for_board(
                     warn!(submission_id=%sub.id, "runner tx closed during drain");
                     return;
                 }
+                events.publish(
+                    sub.id,
+                    crate::events::SubmissionEvent::Status {
+                        status: "running".into(),
+                    },
+                );
             }
             Ok(None) => {
                 // Race: another runner claimed it. Skip.

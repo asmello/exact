@@ -21,6 +21,7 @@ mod build;
 mod config;
 mod db;
 mod dispatcher;
+mod events;
 mod hub;
 mod problems;
 mod runner_ws;
@@ -35,6 +36,7 @@ pub struct AppState {
     pub oauth: BasicClient,
     pub key: Key,
     pub hub: Arc<hub::RunnerHub>,
+    pub events: Arc<events::EventBus>,
 }
 
 impl FromRef<AppState> for Key {
@@ -79,6 +81,7 @@ async fn main() -> Result<()> {
         oauth,
         key,
         hub: hub::RunnerHub::new(),
+        events: events::EventBus::new(),
     };
 
     let app = Router::new()

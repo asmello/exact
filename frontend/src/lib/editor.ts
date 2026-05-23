@@ -4,8 +4,9 @@
 // a teardown function so the caller (a Svelte effect) can `destroy()` the
 // view when the host unmounts.
 
+import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { rust } from '@codemirror/lang-rust';
-import { syntaxHighlighting } from '@codemirror/language';
+import { indentUnit, syntaxHighlighting } from '@codemirror/language';
 import { EditorState } from '@codemirror/state';
 import { oneDarkHighlightStyle } from '@codemirror/theme-one-dark';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
@@ -14,15 +15,33 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 export interface MountOptions {
   initialDoc: string;
   onChange?: (doc: string) => void;
+  /** Cmd/Ctrl+Enter binding; return true if handled. */
+  onSubmit?: () => void;
 }
 
 export function mount(host: HTMLElement, opts: MountOptions): () => void {
+  const submitBinding = {
+    key: 'Mod-Enter',
+    run: () => {
+      opts.onSubmit?.();
+      return true;
+    }
+  };
+
   const state = EditorState.create({
     doc: opts.initialDoc,
     extensions: [
       lineNumbers(),
       history(),
-      keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+      closeBrackets(),
+      indentUnit.of('    '),
+      keymap.of([
+        submitBinding,
+        ...closeBracketsKeymap,
+        ...defaultKeymap,
+        ...historyKeymap,
+        indentWithTab
+      ]),
       rust(),
       syntaxHighlighting(oneDarkHighlightStyle),
       EditorView.theme(
@@ -42,5 +61,6 @@ export function mount(host: HTMLElement, opts: MountOptions): () => void {
   });
 
   const view = new EditorView({ state, parent: host });
+  view.focus();
   return () => view.destroy();
 }

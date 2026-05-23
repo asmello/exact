@@ -5,15 +5,22 @@
 // stage that adds → running → done lands in step 6.
 
 use anyhow::Context;
+use std::convert::Infallible;
+use std::time::Duration;
+
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use exact_proto::Board;
 use exact_proto::b64_bytes_opt;
+use futures_util::Stream;
 use serde::{Deserialize, Serialize};
+use tokio_stream::StreamExt as _;
+use tokio_stream::wrappers::BroadcastStream;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -26,6 +33,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/submissions", post(create))
         .route("/api/submissions/{id}", get(detail))
+        .route("/api/submissions/{id}/events", get(events_stream))
 }
 
 #[derive(Deserialize)]
@@ -135,6 +143,12 @@ async fn run_build(
     db::set_submission_status(&state.db, id, "building")
         .await
         .context("status=building")?;
+    state.events.publish(
+        id,
+        crate::events::SubmissionEvent::Status {
+            status: "building".into(),
+        },
+    );
     info!(%id, "build starting");
 
     let outcome = build::build(
@@ -151,6 +165,12 @@ async fn run_build(
             db::set_submission_built(&state.db, id, &bin)
                 .await
                 .context("status=ready")?;
+            state.events.publish(
+                id,
+                crate::events::SubmissionEvent::Status {
+                    status: "ready".into(),
+                },
+            );
             // Try to dispatch to a runner immediately. If no runner is
             // online for this board, the submission stays at 'ready' and
             // the next runner to Hello will drain it.
@@ -161,6 +181,9 @@ async fn run_build(
             db::set_submission_failed(&state.db, id, &log)
                 .await
                 .context("status=failed")?;
+            state
+                .events
+                .publish(id, crate::events::SubmissionEvent::Failed { log });
         }
         Err(e) => {
             // Infra failure (couldn't spawn cargo, missing userlib, etc).
@@ -170,6 +193,9 @@ async fn run_build(
             db::set_submission_failed(&state.db, id, &msg)
                 .await
                 .context("status=failed (infra)")?;
+            state
+                .events
+                .publish(id, crate::events::SubmissionEvent::Failed { log: msg });
         }
     }
     Ok(())
@@ -194,29 +220,19 @@ struct SubmissionDetail {
     case_results: Vec<CaseResultView>,
 }
 
-async fn detail(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    AuthUser(user): AuthUser,
-) -> Response {
-    let sub = match db::get_submission(&state.db, id).await {
-        Ok(Some(s)) => s,
-        Ok(None) => return err(StatusCode::NOT_FOUND, "submission not found"),
-        Err(e) => {
-            error!(error=%e, "get submission");
-            return err(StatusCode::INTERNAL_SERVER_ERROR, "db error");
-        }
+async fn load_detail(
+    state: &AppState,
+    id: Uuid,
+    user_id: i64,
+    is_admin: bool,
+) -> Result<Option<SubmissionDetail>, anyhow::Error> {
+    let Some(sub) = db::get_submission(&state.db, id).await? else {
+        return Ok(None);
     };
-    if sub.user_id != user.id && !user.is_admin {
-        return err(StatusCode::NOT_FOUND, "submission not found");
+    if sub.user_id != user_id && !is_admin {
+        return Ok(None);
     }
-    let case_results = match db::list_case_results(&state.db, id).await {
-        Ok(r) => r,
-        Err(e) => {
-            error!(error=%e, %id, "list case_results");
-            return err(StatusCode::INTERNAL_SERVER_ERROR, "db error");
-        }
-    };
+    let case_results = db::list_case_results(&state.db, id).await?;
     let cases_view = case_results
         .into_iter()
         .map(|r| CaseResultView {
@@ -229,9 +245,76 @@ async fn detail(
             synthetic: r.synthetic,
         })
         .collect();
-    Json(SubmissionDetail {
+    Ok(Some(SubmissionDetail {
         submission: sub,
         case_results: cases_view,
-    })
-    .into_response()
+    }))
 }
+
+async fn detail(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    AuthUser(user): AuthUser,
+) -> Response {
+    match load_detail(&state, id, user.id, user.is_admin).await {
+        Ok(Some(d)) => Json(d).into_response(),
+        Ok(None) => err(StatusCode::NOT_FOUND, "submission not found"),
+        Err(e) => {
+            error!(error=%e, %id, "get submission");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "db error")
+        }
+    }
+}
+
+/// SSE: emits a one-shot `snapshot` event with the full detail on connect,
+/// then per-delta events (`status`, `case_result`, `finalized`, `failed`)
+/// as the submission progresses. Each event variant maps to a small JSON
+/// payload — clients merge incrementally rather than refetching.
+async fn events_stream(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    AuthUser(user): AuthUser,
+) -> Response {
+    let snapshot = match load_detail(&state, id, user.id, user.is_admin).await {
+        Ok(Some(d)) => d,
+        Ok(None) => return err(StatusCode::NOT_FOUND, "submission not found"),
+        Err(e) => {
+            error!(error=%e, %id, "snapshot for SSE");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "db error");
+        }
+    };
+
+    let snapshot_json = match serde_json::to_string(&snapshot) {
+        Ok(j) => j,
+        Err(e) => {
+            error!(error=%e, "serialize snapshot");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "encode error");
+        }
+    };
+
+    let initial = tokio_stream::once(Event::default().event("snapshot").data(snapshot_json));
+
+    let rx = state.events.subscribe(id);
+    let deltas = BroadcastStream::new(rx)
+        .filter_map(|res| res.ok())
+        .map(|ev| {
+            let name = match &ev {
+                crate::events::SubmissionEvent::Status { .. } => "status",
+                crate::events::SubmissionEvent::CaseResult { .. } => "case_result",
+                crate::events::SubmissionEvent::Finalized { .. } => "finalized",
+                crate::events::SubmissionEvent::Failed { .. } => "failed",
+            };
+            let data = serde_json::to_string(&ev).unwrap_or_else(|_| String::from("{}"));
+            Event::default().event(name).data(data)
+        });
+
+    let stream = initial.chain(deltas).map(Ok::<Event, Infallible>);
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+        .into_response()
+}
+
+// Ensure tokio_stream::Stream import isn't elided when only used by signature.
+#[allow(dead_code)]
+fn _stream_anchor<S: Stream<Item = ()>>(_: S) {}
