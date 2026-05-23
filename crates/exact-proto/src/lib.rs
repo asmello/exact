@@ -67,18 +67,17 @@ pub enum RunnerToServer {
         version: String,
     },
     Heartbeat,
-    CaseOutput {
-        job_id: Uuid,
-        case_ord: u32,
-        #[serde(with = "b64_bytes")]
-        output: Vec<u8>,
-    },
     CaseResult {
         job_id: Uuid,
         case_ord: u32,
         status: CaseStatus,
         exit_code: u32,
         cycles: u64,
+        /// Variable-length output the user program wrote via
+        /// `userlib::write`. Buffered by the runner across syscalls and
+        /// shipped as one chunk per case.
+        #[serde(with = "b64_bytes")]
+        output: Vec<u8>,
         /// True if the runner fabricated `cycles` (QEMU dev mode).
         synthetic: bool,
     },

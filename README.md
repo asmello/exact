@@ -55,12 +55,45 @@ origin.
 
 ## Status
 
-Step 3 of the implementation plan: Postgres schema + GitHub OAuth
-sign-in + `/api/me`. Sessions are signed cookies (HMAC over user id),
-so restarts don't log users out. The editor page renders Rust with
-proper syntax highlighting via `@codemirror/theme-one-dark`.
+Step 6: end-to-end submissions against a Cortex-M device (QEMU or real
+hardware). On submit, exact-api compiles the user snippet for
+thumbv7m-none-eabi, packs the ELF into a monoexec `.bin` via
+`monolink::pack_into`, and ships it over a runner WebSocket to a Pi-side
+agent. The agent drives `monolink::Loader::upload_and_run` on the
+device, streams per-case status / cycles / output back, and the API
+persists everything to `case_results` for the frontend to render.
 
-No problems, submissions, or runner yet — those land in steps 4–6.
+For QEMU dev mode, the runner spawns `qemu-system-arm` itself and uses
+the PTY it advertises on stderr — the runner code path is the same as
+real hardware otherwise. Cycle counts on QEMU are fabricated
+deterministically per `(bin, case_input)` (siphash) so leaderboards
+exercise sort-order code even without a real DWT.
+
+### Verifying step 6 end-to-end
+
+```sh
+# Terminal 1: API
+cargo run -p exact-api
+
+# In the admin UI:
+#   /admin/devices → register "qemu-local" (board lm3s6965evb,
+#     cclk 12_000_000, synthetic on)
+#   → provision a runner for it, copy the one-shot token to ./runner.token
+
+# Terminal 2: build the mono-os kernel (one-time)
+cd ../mono-os && cargo build --release -p kernel && cd -
+
+# Terminal 3: runner
+cargo run -p exact-runner -- \
+  --backend-url ws://127.0.0.1:3000/api/runner/ws \
+  --api-key-file ./runner.token \
+  --device-id qemu-local \
+  --qemu \
+  --kernel ../mono-os/target/thumbv7m-none-eabi/release/kernel
+
+# Frontend: visit /p/sum-to-n (or whichever problem you authored), hit
+# Submit. Watch the case_results render with synthetic cycle counts.
+```
 
 See the parent plan at `/Users/asm/.claude/plans/in-this-folder-i-shiny-hare.md`
 for the full implementation outline.

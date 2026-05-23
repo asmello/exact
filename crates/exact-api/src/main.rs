@@ -15,11 +15,15 @@ use sqlx::PgPool;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod admin;
 mod auth;
 mod build;
 mod config;
 mod db;
+mod dispatcher;
+mod hub;
 mod problems;
+mod runner_ws;
 mod submissions;
 
 use config::Config;
@@ -30,6 +34,7 @@ pub struct AppState {
     pub db: PgPool,
     pub oauth: BasicClient,
     pub key: Key,
+    pub hub: Arc<hub::RunnerHub>,
 }
 
 impl FromRef<AppState> for Key {
@@ -73,6 +78,7 @@ async fn main() -> Result<()> {
         db: pool,
         oauth,
         key,
+        hub: hub::RunnerHub::new(),
     };
 
     let app = Router::new()
@@ -81,6 +87,8 @@ async fn main() -> Result<()> {
         .merge(auth::router())
         .merge(problems::router())
         .merge(submissions::router())
+        .merge(admin::router())
+        .merge(runner_ws::router())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)

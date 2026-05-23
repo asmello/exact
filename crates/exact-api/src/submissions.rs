@@ -12,7 +12,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use exact_proto::Board;
-use serde::Deserialize;
+use exact_proto::b64_bytes_opt;
+use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -149,7 +150,11 @@ async fn run_build(
             info!(%id, bytes = bin.len(), "build done");
             db::set_submission_built(&state.db, id, &bin)
                 .await
-                .context("status=done")?;
+                .context("status=ready")?;
+            // Try to dispatch to a runner immediately. If no runner is
+            // online for this board, the submission stays at 'ready' and
+            // the next runner to Hello will drain it.
+            crate::dispatcher::dispatch_or_queue(&state, id, board).await;
         }
         Ok(BuildOutcome::Failure { log }) => {
             info!(%id, log_len = log.len(), "build failed");
@@ -170,6 +175,25 @@ async fn run_build(
     Ok(())
 }
 
+#[derive(Serialize)]
+struct CaseResultView {
+    case_ord: i32,
+    status: String,
+    exit_code: Option<i32>,
+    cycles: Option<i64>,
+    #[serde(with = "b64_bytes_opt")]
+    output: Option<Vec<u8>>,
+    passed: Option<bool>,
+    synthetic: bool,
+}
+
+#[derive(Serialize)]
+struct SubmissionDetail {
+    #[serde(flatten)]
+    submission: db::Submission,
+    case_results: Vec<CaseResultView>,
+}
+
 async fn detail(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -186,5 +210,28 @@ async fn detail(
     if sub.user_id != user.id && !user.is_admin {
         return err(StatusCode::NOT_FOUND, "submission not found");
     }
-    Json(sub).into_response()
+    let case_results = match db::list_case_results(&state.db, id).await {
+        Ok(r) => r,
+        Err(e) => {
+            error!(error=%e, %id, "list case_results");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "db error");
+        }
+    };
+    let cases_view = case_results
+        .into_iter()
+        .map(|r| CaseResultView {
+            case_ord: r.case_ord,
+            status: r.status,
+            exit_code: r.exit_code,
+            cycles: r.cycles,
+            output: r.output,
+            passed: r.passed,
+            synthetic: r.synthetic,
+        })
+        .collect();
+    Json(SubmissionDetail {
+        submission: sub,
+        case_results: cases_view,
+    })
+    .into_response()
 }

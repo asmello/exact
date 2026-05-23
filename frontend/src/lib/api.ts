@@ -147,13 +147,26 @@ export interface Submission {
   source_code: string;
   board: string;
   device_id: string | null;
-  status: 'queued' | 'building' | 'running' | 'done' | 'failed';
+  status: 'queued' | 'building' | 'ready' | 'running' | 'done' | 'failed';
   build_log: string | null;
   total_cycles: number | null;
   passed: number | null;
   total_cases: number | null;
   created_at: string;
   finished_at: string | null;
+  /** Populated by GET /api/submissions/:id (detail endpoint). */
+  case_results?: CaseResult[];
+}
+
+export interface CaseResult {
+  case_ord: number;
+  status: string;
+  exit_code: number | null;
+  cycles: number | null;
+  /** base64-encoded output bytes */
+  output: string | null;
+  passed: boolean | null;
+  synthetic: boolean;
 }
 
 export interface CreateSubmissionBody {
@@ -175,6 +188,77 @@ export const submissions = {
     return fetch(`/api/submissions/${encodeURIComponent(id)}`, {
       credentials: 'same-origin'
     }).then(json<Submission>);
+  }
+};
+
+// ---- Devices + runners (admin) ------------------------------------------
+
+export interface Device {
+  id: string;
+  board: string;
+  cclk_hz: number;
+  description: string | null;
+  active: boolean;
+  last_seen: string | null;
+  synthetic: boolean;
+  online: boolean;
+}
+
+export interface Runner {
+  id: number;
+  device_id: string;
+  label: string;
+  token_prefix: string;
+  created_by: number;
+  created_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+}
+
+export interface CreateDeviceBody {
+  id: string;
+  board: Board;
+  cclk_hz: number;
+  description?: string;
+  synthetic?: boolean;
+}
+
+export interface CreateRunnerResponse {
+  runner: Runner;
+  token: string;
+}
+
+export const devices = {
+  list(): Promise<Device[]> {
+    return fetch('/api/devices', { credentials: 'same-origin' }).then(json<Device[]>);
+  },
+  create(body: CreateDeviceBody): Promise<Device> {
+    return fetch('/api/admin/devices', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(json<Device>);
+  }
+};
+
+export const runners = {
+  list(): Promise<Runner[]> {
+    return fetch('/api/admin/runners', { credentials: 'same-origin' }).then(json<Runner[]>);
+  },
+  create(device_id: string, label: string): Promise<CreateRunnerResponse> {
+    return fetch('/api/admin/runners', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device_id, label })
+    }).then(json<CreateRunnerResponse>);
+  },
+  revoke(id: number): Promise<void> {
+    return fetch(`/api/admin/runners/${id}`, {
+      method: 'DELETE',
+      credentials: 'same-origin'
+    }).then(json<void>);
   }
 };
 

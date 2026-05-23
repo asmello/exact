@@ -24,6 +24,10 @@ result-*
 # Local Postgres data dir
 /.pgdata
 
+# Runner bearer tokens (one-shot, secret)
+/runner.token
+/*.token
+
 # Editor
 .DS_Store
 *.swp
