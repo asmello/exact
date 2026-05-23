@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct User {
@@ -319,4 +320,112 @@ pub async fn list_test_cases(pool: &PgPool, problem_id: &str) -> Result<Vec<Test
     .await
     .context("listing test cases")?;
     Ok(rows)
+}
+
+// ---- Submissions ---------------------------------------------------------
+
+/// Submission row sans `bin_blob`. The .bin is fetched separately when
+/// needed (only by the runner dispatcher) to keep this struct cheap to
+/// serialize over JSON.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct Submission {
+    pub id: Uuid,
+    pub user_id: i64,
+    pub problem_id: Option<String>,
+    pub source_code: String,
+    pub board: String,
+    pub device_id: Option<String>,
+    pub status: String,
+    pub build_log: Option<String>,
+    pub total_cycles: Option<i64>,
+    pub passed: Option<i32>,
+    pub total_cases: Option<i32>,
+    pub created_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+const SUBMISSION_COLS: &str = "id, user_id, problem_id, source_code, board, device_id, \
+    status, build_log, total_cycles, passed, total_cases, created_at, finished_at";
+
+pub async fn create_submission(
+    pool: &PgPool,
+    id: Uuid,
+    user_id: i64,
+    problem_id: Option<&str>,
+    source_code: &str,
+    board: &str,
+) -> Result<Submission> {
+    let row = sqlx::query_as::<_, Submission>(&format!(
+        "INSERT INTO submissions (id, user_id, problem_id, source_code, board, status) \
+         VALUES ($1,$2,$3,$4,$5,'queued') RETURNING {SUBMISSION_COLS}"
+    ))
+    .bind(id)
+    .bind(user_id)
+    .bind(problem_id)
+    .bind(source_code)
+    .bind(board)
+    .fetch_one(pool)
+    .await
+    .context("inserting submission")?;
+    Ok(row)
+}
+
+pub async fn get_submission(pool: &PgPool, id: Uuid) -> Result<Option<Submission>> {
+    let row = sqlx::query_as::<_, Submission>(&format!(
+        "SELECT {SUBMISSION_COLS} FROM submissions WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("fetching submission")?;
+    Ok(row)
+}
+
+pub async fn set_submission_status(pool: &PgPool, id: Uuid, status: &str) -> Result<()> {
+    sqlx::query("UPDATE submissions SET status = $1 WHERE id = $2")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("updating submission status")?;
+    Ok(())
+}
+
+pub async fn set_submission_built(pool: &PgPool, id: Uuid, bin: &[u8]) -> Result<()> {
+    sqlx::query(
+        "UPDATE submissions SET status = 'done', bin_blob = $1, finished_at = now() \
+         WHERE id = $2",
+    )
+    .bind(bin)
+    .bind(id)
+    .execute(pool)
+    .await
+    .context("marking submission built")?;
+    Ok(())
+}
+
+/// Fetch the packed `.bin` for a submission. Only used by the runner
+/// dispatcher; never returned to a browser.
+#[allow(dead_code)] // wired up in step 6
+pub async fn get_submission_bin(pool: &PgPool, id: Uuid) -> Result<Option<Vec<u8>>> {
+    let row: Option<(Option<Vec<u8>>,)> =
+        sqlx::query_as("SELECT bin_blob FROM submissions WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .context("fetching submission bin_blob")?;
+    Ok(row.and_then(|(b,)| b))
+}
+
+pub async fn set_submission_failed(pool: &PgPool, id: Uuid, log: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE submissions SET status = 'failed', build_log = $1, finished_at = now() \
+         WHERE id = $2",
+    )
+    .bind(log)
+    .bind(id)
+    .execute(pool)
+    .await
+    .context("marking submission failed")?;
+    Ok(())
 }

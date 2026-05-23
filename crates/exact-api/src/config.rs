@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, bail};
 use url::Url;
 
@@ -9,6 +11,10 @@ pub struct Config {
     pub github_client_secret: String,
     pub session_secret: Vec<u8>,
     pub bootstrap_admin_github_login: Option<String>,
+    /// Absolute path to `mono-os/userlib/`. The build worker substitutes
+    /// this into the per-submission Cargo.toml so the temp project's
+    /// `userlib` path dep resolves.
+    pub userlib_path: PathBuf,
 }
 
 impl Config {
@@ -35,6 +41,15 @@ impl Config {
 
         let bootstrap_admin_github_login = std::env::var("BOOTSTRAP_ADMIN_GITHUB_LOGIN").ok();
 
+        // Defaults assume the standard sibling-checkout layout: `bench/exact`
+        // alongside `bench/mono-os`. Override via env when deploying.
+        let userlib_path = std::env::var("EXACT_USERLIB_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("../mono-os/userlib"));
+        let userlib_path = userlib_path
+            .canonicalize()
+            .with_context(|| format!("canonicalizing userlib path {}", userlib_path.display()))?;
+
         Ok(Self {
             bind_addr,
             database_url,
@@ -43,6 +58,7 @@ impl Config {
             github_client_secret,
             session_secret,
             bootstrap_admin_github_login,
+            userlib_path,
         })
     }
 }

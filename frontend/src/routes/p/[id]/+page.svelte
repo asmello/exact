@@ -1,7 +1,16 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { mount } from '$lib/editor';
-  import { problems, cases, ApiError, type Problem, type TestCase } from '$lib/api';
+  import {
+    problems,
+    cases,
+    submissions,
+    ApiError,
+    type Problem,
+    type TestCase,
+    type Submission,
+    type Board
+  } from '$lib/api';
   import { b64ToHex } from '$lib/bytes';
 
   const id = $derived(page.params.id ?? '');
@@ -11,6 +20,12 @@
   let testCases = $state<TestCase[]>([]);
   let error = $state<string | null>(null);
   let editorHost = $state<HTMLDivElement | undefined>(undefined);
+
+  let source = $state('');
+  let board = $state<Board>('lm3s6965evb');
+  let submission = $state<Submission | null>(null);
+  let submitting = $state(false);
+  let submitError = $state<string | null>(null);
 
   $effect(() => {
     void (async () => {
@@ -22,6 +37,10 @@
         ]);
         problem = p;
         testCases = cs;
+        source = p.starter_code;
+        if (p.allowed_boards.length > 0) {
+          board = p.allowed_boards[0] as Board;
+        }
       } catch (e) {
         error = e instanceof ApiError ? `${e.status}: ${e.message}` : String(e);
       }
@@ -33,9 +52,34 @@
     if (!problem || !editorHost) return;
     return mount(editorHost, {
       initialDoc: problem.starter_code,
-      onChange: () => {}
+      onChange: (doc) => {
+        source = doc;
+      }
     });
   });
+
+  async function submit() {
+    if (!problem || submitting) return;
+    submitError = null;
+    submitting = true;
+    try {
+      const created = await submissions.create({
+        problem_id: problem.id,
+        source_code: source,
+        board
+      });
+      submission = created;
+      // Poll until terminal status. Step 7 will replace with SSE.
+      while (submission && submission.status !== 'done' && submission.status !== 'failed') {
+        await new Promise((r) => setTimeout(r, 500));
+        submission = await submissions.get(created.id);
+      }
+    } catch (e) {
+      submitError = e instanceof ApiError ? `${e.status}: ${e.message}` : String(e);
+    } finally {
+      submitting = false;
+    }
+  }
 </script>
 
 <main class="mx-auto flex min-h-screen max-w-5xl flex-col gap-6 px-6 py-10">
@@ -62,16 +106,62 @@
     </section>
 
     <section class="flex flex-col gap-2">
-      <span class="text-xs uppercase tracking-wider text-zinc-400">Editor (preview)</span>
+      <div class="flex items-center justify-between">
+        <span class="text-xs uppercase tracking-wider text-zinc-400">Editor</span>
+        <div class="flex items-center gap-3 text-sm">
+          <label class="flex items-center gap-2 text-zinc-300">
+            board
+            <select
+              bind:value={board}
+              class="rounded border border-zinc-800 bg-zinc-900 px-2 py-1 font-mono text-xs text-zinc-100"
+            >
+              {#each problem.allowed_boards as b (b)}
+                <option value={b}>{b}</option>
+              {/each}
+            </select>
+          </label>
+          <button
+            type="button"
+            onclick={submit}
+            disabled={submitting}
+            class="rounded border border-emerald-700 bg-emerald-900/30 px-3 py-1 text-emerald-300 hover:bg-emerald-900/50 disabled:opacity-50"
+          >
+            {submitting ? 'building…' : 'submit'}
+          </button>
+        </div>
+      </div>
       <div
         bind:this={editorHost}
         class="h-96 overflow-hidden rounded border border-zinc-800 bg-zinc-900"
       ></div>
-      <p class="text-xs text-zinc-500">
-        Submission flow lands in step 7. For now this is a read/edit-on-screen preview of the
-        starter code.
-      </p>
     </section>
+
+    {#if submitError}
+      <p class="text-sm text-rose-400">{submitError}</p>
+    {/if}
+
+    {#if submission}
+      <section class="flex flex-col gap-2">
+        <span class="text-xs uppercase tracking-wider text-zinc-400">
+          Submission {submission.id.slice(0, 8)}…
+        </span>
+        <div class="flex items-baseline gap-3 text-sm">
+          <span class="font-mono text-zinc-300">status: {submission.status}</span>
+          {#if submission.finished_at}
+            <span class="text-zinc-500">finished {submission.finished_at}</span>
+          {/if}
+        </div>
+        {#if submission.status === 'failed' && submission.build_log}
+          <pre
+            class="max-h-96 overflow-auto rounded border border-rose-900 bg-rose-950/30 px-3 py-2 font-mono text-xs text-rose-200 whitespace-pre-wrap">{submission.build_log}</pre>
+        {:else if submission.status === 'done'}
+          <p class="text-sm text-emerald-400">
+            Built. Per-case execution + cycle counts land in step 6 (runner) / step 7 (results
+            streaming).
+          </p>
+        {/if}
+      </section>
+    {/if}
 
     <section class="flex flex-col gap-2">
       <span class="text-xs uppercase tracking-wider text-zinc-400">Visible test cases</span>

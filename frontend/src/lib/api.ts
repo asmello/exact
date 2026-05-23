@@ -138,6 +138,46 @@ export const problems = {
   }
 };
 
+export type Board = 'lm3s6965evb' | 'lpc1768' | 'stm32f429zi';
+
+export interface Submission {
+  id: string;
+  user_id: number;
+  problem_id: string | null;
+  source_code: string;
+  board: string;
+  device_id: string | null;
+  status: 'queued' | 'building' | 'running' | 'done' | 'failed';
+  build_log: string | null;
+  total_cycles: number | null;
+  passed: number | null;
+  total_cases: number | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface CreateSubmissionBody {
+  problem_id?: string | null;
+  source_code: string;
+  board: Board;
+}
+
+export const submissions = {
+  create(body: CreateSubmissionBody): Promise<Submission> {
+    return fetch('/api/submissions', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(json<Submission>);
+  },
+  get(id: string): Promise<Submission> {
+    return fetch(`/api/submissions/${encodeURIComponent(id)}`, {
+      credentials: 'same-origin'
+    }).then(json<Submission>);
+  }
+};
+
 export const cases = {
   list(problemId: string, shareToken?: string): Promise<TestCase[]> {
     const url = shareToken

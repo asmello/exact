@@ -1,0 +1,34 @@
+# Template for per-submission build projects. The build worker copies this
+# into a tempdir and replaces the placeholders below:
+#   __USERLIB_PATH__   absolute path to `mono-os/userlib`
+#
+# Each user submission becomes a `[[bin]]` named `exact-job` that links
+# against userlib + the generated `user.x` linker script (driven by the
+# accompanying build.rs).
+
+[package]
+name = "exact-job"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "exact-job"
+path = "src/main.rs"
+
+[features]
+default = ["lm3s6965evb"]
+lm3s6965evb = ["userlib/lm3s6965evb"]
+lpc1768 = ["userlib/lpc1768"]
+
+[dependencies]
+userlib = { path = "__USERLIB_PATH__", default-features = false, features = ["panic-handler"] }
+
+# Mirror the kernel's release profile choices: small + abort-on-panic. We
+# keep symbols so monolink::pack_into can resolve `_start` from the ELF.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false

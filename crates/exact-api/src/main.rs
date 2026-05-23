@@ -16,9 +16,11 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod auth;
+mod build;
 mod config;
 mod db;
 mod problems;
+mod submissions;
 
 use config::Config;
 
@@ -78,6 +80,7 @@ async fn main() -> Result<()> {
         .route("/api/me", get(auth::me))
         .merge(auth::router())
         .merge(problems::router())
+        .merge(submissions::router())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)
