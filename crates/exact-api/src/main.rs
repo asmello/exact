@@ -18,6 +18,7 @@ use tracing_subscriber::EnvFilter;
 mod auth;
 mod config;
 mod db;
+mod problems;
 
 use config::Config;
 
@@ -76,6 +77,7 @@ async fn main() -> Result<()> {
         .route("/api/healthz", get(|| async { "ok" }))
         .route("/api/me", get(auth::me))
         .merge(auth::router())
+        .merge(problems::router())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)

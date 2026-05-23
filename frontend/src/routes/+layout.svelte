@@ -27,9 +27,10 @@
       {/if}
       <span class="text-zinc-300">{me.user.github_login}</span>
       {#if me.user.is_admin}
-        <span
-          class="rounded border border-emerald-700 px-1.5 py-0.5 font-mono text-[10px] uppercase text-emerald-400"
-          >admin</span
+        <a
+          href="/admin"
+          class="rounded border border-emerald-700 px-1.5 py-0.5 font-mono text-[10px] uppercase text-emerald-400 hover:bg-emerald-950"
+          >admin</a
         >
       {/if}
       <button

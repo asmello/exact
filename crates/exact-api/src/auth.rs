@@ -7,12 +7,13 @@
 use anyhow::{Context, Result};
 use axum::Json;
 use axum::Router;
-use axum::extract::{Query, State};
+use axum::extract::{FromRef, FromRequestParts, OptionalFromRequestParts, Query, State};
 use axum::http::StatusCode;
+use axum::http::request::Parts;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum_extra::extract::SignedCookieJar;
-use axum_extra::extract::cookie::{Cookie, SameSite};
+use axum_extra::extract::cookie::{Cookie, Key, SameSite};
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
@@ -189,9 +190,79 @@ pub async fn current_user(jar: &SignedCookieJar, state: &AppState) -> Option<db:
     db::get_user(&state.db, id).await.ok().flatten()
 }
 
-pub async fn me(State(state): State<AppState>, jar: SignedCookieJar) -> Response {
-    match current_user(&jar, &state).await {
-        Some(u) => Json(u).into_response(),
+/// Extractor that requires a valid session. Returns 401 if absent/invalid.
+#[derive(Debug, Clone)]
+pub struct AuthUser(pub db::User);
+
+impl<S> FromRequestParts<S> for AuthUser
+where
+    AppState: FromRef<S>,
+    Key: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let app_state = AppState::from_ref(state);
+        let jar = SignedCookieJar::from_request_parts(parts, state)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        match current_user(&jar, &app_state).await {
+            Some(u) => Ok(AuthUser(u)),
+            None => Err(StatusCode::UNAUTHORIZED),
+        }
+    }
+}
+
+/// `Option<AuthUser>` routes through this trait in axum 0.8; absence of a
+/// valid session yields `None` instead of rejecting the request.
+impl<S> OptionalFromRequestParts<S> for AuthUser
+where
+    AppState: FromRef<S>,
+    Key: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        Ok(
+            <Self as FromRequestParts<S>>::from_request_parts(parts, state)
+                .await
+                .ok(),
+        )
+    }
+}
+
+/// Extractor that requires the session user to have `is_admin = true`.
+/// 401 if no session, 403 if session but not admin.
+#[derive(Debug, Clone)]
+pub struct AdminUser(pub db::User);
+
+impl<S> FromRequestParts<S> for AdminUser
+where
+    AppState: FromRef<S>,
+    Key: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let AuthUser(u) =
+            <AuthUser as FromRequestParts<S>>::from_request_parts(parts, state).await?;
+        if u.is_admin {
+            Ok(AdminUser(u))
+        } else {
+            Err(StatusCode::FORBIDDEN)
+        }
+    }
+}
+
+pub async fn me(user: Option<AuthUser>) -> Response {
+    match user {
+        Some(AuthUser(u)) => Json(u).into_response(),
         None => StatusCode::UNAUTHORIZED.into_response(),
     }
 }

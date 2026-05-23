@@ -110,7 +110,8 @@ pub enum ServerToRunner {
     Ping,
 }
 
-mod b64_bytes {
+/// `#[serde(with = "b64_bytes")]` helper: `Vec<u8>` <-> base64 string.
+pub mod b64_bytes {
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
     use serde::{Deserialize, Deserializer, Serializer, de};
@@ -122,5 +123,26 @@ mod b64_bytes {
     pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Vec<u8>, D::Error> {
         let s: String = Deserialize::deserialize(de)?;
         STANDARD.decode(s.as_bytes()).map_err(de::Error::custom)
+    }
+}
+
+/// `#[serde(with = "b64_bytes_opt")]` helper: `Option<Vec<u8>>` <-> optional
+/// base64 string.
+pub mod b64_bytes_opt {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use serde::{Deserialize, Deserializer, Serializer, de};
+
+    pub fn serialize<S: Serializer>(opt: &Option<Vec<u8>>, ser: S) -> Result<S::Ok, S::Error> {
+        match opt {
+            Some(bytes) => ser.serialize_some(&STANDARD.encode(bytes)),
+            None => ser.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Option<Vec<u8>>, D::Error> {
+        let opt: Option<String> = Deserialize::deserialize(de)?;
+        opt.map(|s| STANDARD.decode(s.as_bytes()).map_err(de::Error::custom))
+            .transpose()
     }
 }
