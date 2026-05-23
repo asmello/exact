@@ -98,6 +98,51 @@ cargo run -p exact-runner -- \
 See the parent plan at `/Users/asm/.claude/plans/in-this-folder-i-shiny-hare.md`
 for the full implementation outline.
 
+## Pi runner deployment
+
+The Pi-side agent is a single binary cross-built on the dev box and
+deployed under systemd. Three steps; the scripts in `scripts/` do the
+heavy lifting.
+
+```sh
+# 1. On the dev box: cross-build for aarch64-linux (Pi 3/4/5, 64-bit OS).
+#    Needs `nix develop` so cargo-zigbuild + zig are on PATH.
+./scripts/build-runner-aarch64.sh
+# → target/aarch64-unknown-linux-gnu/release/exact-runner
+
+# 2. Provision a runner in the admin UI (/admin/devices) and copy the
+#    one-shot token. Then ship the binary + token to the Pi:
+scp target/aarch64-unknown-linux-gnu/release/exact-runner pi@bench.lan:
+scp runner.token pi@bench.lan:
+scp scripts/runner-install.sh scripts/exact-runner.service.in pi@bench.lan:
+
+# 3. On the Pi: run the installer (it creates the service user, drops
+#    the binary + token + systemd unit, and starts the service).
+ssh pi@bench.lan
+./runner-install.sh \
+  --binary ./exact-runner \
+  --backend-url wss://exact.run/api/runner/ws \
+  --device-id lpc1768-pi-asm \
+  --serial-port /dev/ttyACM0 \
+  --token-file ./runner.token \
+  --board lpc1768
+
+systemctl status exact-runner
+journalctl -u exact-runner -f
+```
+
+Verify on the API side: the device should turn green on `/admin/devices`
+within a few seconds (`last_seen` ticks). Submit a problem against the
+LPC1768 board — the case_results panel should show real cycle counts
+(no `synth` badge).
+
+The systemd unit is hardened: runs as a dedicated `exact-runner` user,
+read-only filesystem (`ProtectSystem=strict`), no access to anything
+outside the serial port device node (`DevicePolicy=closed` +
+`DeviceAllow=<port> rw`), `MemoryDenyWriteExecute=true`. A compromised
+runner can talk to the backend over WSS and drive the attached MCU and
+nothing else.
+
 ## License
 
 MIT.

@@ -2,5 +2,7 @@
 channel = "nightly"
 components = ["rust-src", "rust-analyzer", "clippy", "rustfmt"]
 # thumbv7m-none-eabi is the build worker's cross-target — user submissions
-# compile against this. The host triple is picked up automatically.
-targets = ["thumbv7m-none-eabi"]
+# compile against this.
+# aarch64-unknown-linux-gnu is the cross-target for the Pi runner (cross-built
+# from darwin via cargo-zigbuild). The host triple is picked up automatically.
+targets = ["thumbv7m-none-eabi", "aarch64-unknown-linux-gnu"]

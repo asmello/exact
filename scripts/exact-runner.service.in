@@ -1,0 +1,48 @@
+[Unit]
+Description=exact-runner — Cortex-M bridge for exact-api
+Documentation=https://github.com/asm/exact
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=exact-runner
+Group=exact-runner
+ExecStart=/usr/local/bin/exact-runner \
+  --backend-url ${BACKEND_URL} \
+  --api-key-file /etc/exact-runner/token \
+  --device-id ${DEVICE_ID} \
+  --serial-port ${SERIAL_PORT} \
+  --board ${BOARD} \
+  --cclk-hz ${CCLK_HZ} \
+  --baud ${BAUD}
+Restart=on-failure
+RestartSec=5s
+
+# Pi-side hardening. The runner only needs to:
+#  - read /etc/exact-runner/token,
+#  - read+write the serial port device node,
+#  - make outbound HTTPS+WSS to the backend.
+# Nothing else on the filesystem should be reachable.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+DeviceAllow=${SERIAL_PORT} rw
+DevicePolicy=closed
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+# Service user needs dialout for serial; no other supplementary groups.
+SupplementaryGroups=dialout
+
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target

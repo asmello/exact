@@ -30,6 +30,9 @@
           ];
           targets = [
             "thumbv7m-none-eabi"
+            # Cross-target for the Pi-side runner (built via cargo-zigbuild
+            # on darwin → scp'd onto the Pi). See scripts/build-runner-aarch64.sh.
+            "aarch64-unknown-linux-gnu"
           ];
         };
       in
@@ -44,6 +47,11 @@
             postgresql_16
             # QEMU for the local runner dev mode (used from step 6 onward).
             qemu
+            # Cross-linker for aarch64-linux runner builds. zig ships the
+            # cross-libc + linker; cargo-zigbuild wires it into cargo so
+            # `--target aarch64-unknown-linux-gnu` "just works" from darwin.
+            zig
+            cargo-zigbuild
           ];
           env = {
             RUST_SRC_PATH = "${nightlyToolChain}/lib/rustlib/src/library";
