@@ -55,13 +55,28 @@ origin.
 
 ## Status
 
-Step 6: end-to-end submissions against a Cortex-M device (QEMU or real
-hardware). On submit, exact-api compiles the user snippet for
-thumbv7m-none-eabi, packs the ELF into a monoexec `.bin` via
-`monolink::pack_into`, and ships it over a runner WebSocket to a Pi-side
-agent. The agent drives `monolink::Loader::upload_and_run` on the
-device, streams per-case status / cycles / output back, and the API
-persists everything to `case_results` for the frontend to render.
+The plan's 10 implementation steps are complete:
+
+- **Steps 1–5** — workspace, GitHub OAuth, problem CRUD, build worker.
+- **Step 6** — runner WebSocket + QEMU dev mode + end-to-end submissions.
+- **Step 7** — SSE-streamed per-case deltas, CodeMirror polish, markdown
+  description rendering, io_spec-aware output decoding.
+- **Step 8** — Pi deployment (see [Pi runner deployment](#pi-runner-deployment)
+  below): cross-build via `cargo-zigbuild` + hardened systemd unit.
+- **Step 9** — per-(problem, board) leaderboards, visibility-gated
+  (`public` open, `shared` requires `?t=`, `private` 404s). Includes the
+  viewer's own row even when outside the top N.
+- **Step 10** — submission permalinks at `/s/[id]` (gated by the
+  problem's read access, so leaderboard entries link through to viewable
+  source), per-(problem, board) "Your history" panel, per-board rank
+  chips on the problem list.
+
+On submit, exact-api compiles the user snippet for `thumbv7m-none-eabi`,
+packs the ELF into a monoexec `.bin` via `monolink::pack_into`, and
+ships it over a runner WebSocket to a Pi-side agent. The agent drives
+`monolink::Loader::upload_and_run` on the device, streams per-case
+status / cycles / output back, and the API persists everything to
+`case_results` for the frontend to render.
 
 For QEMU dev mode, the runner spawns `qemu-system-arm` itself and uses
 the PTY it advertises on stderr — the runner code path is the same as
@@ -69,7 +84,7 @@ real hardware otherwise. Cycle counts on QEMU are fabricated
 deterministically per `(bin, case_input)` (siphash) so leaderboards
 exercise sort-order code even without a real DWT.
 
-### Verifying step 6 end-to-end
+### Verifying end-to-end (QEMU)
 
 ```sh
 # Terminal 1: API
@@ -94,9 +109,6 @@ cargo run -p exact-runner -- \
 # Frontend: visit /p/sum-to-n (or whichever problem you authored), hit
 # Submit. Watch the case_results render with synthetic cycle counts.
 ```
-
-See the parent plan at `/Users/asm/.claude/plans/in-this-folder-i-shiny-hare.md`
-for the full implementation outline.
 
 ## Pi runner deployment
 
