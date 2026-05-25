@@ -262,6 +262,43 @@ export const runners = {
   }
 };
 
+// ---- Leaderboards --------------------------------------------------------
+
+export interface LeaderboardEntry {
+  rank: number;
+  submission_id: string;
+  user_id: number;
+  github_login: string;
+  avatar_url: string | null;
+  total_cycles: number;
+  finished_at: string;
+  synthetic: boolean;
+}
+
+export interface LeaderboardResponse {
+  problem_id: string;
+  board: string;
+  entries: LeaderboardEntry[];
+  /** Viewer's best entry — present even when outside the top N. */
+  you: LeaderboardEntry | null;
+}
+
+export const leaderboards = {
+  get(
+    problemId: string,
+    board: string,
+    opts?: { shareToken?: string; limit?: number }
+  ): Promise<LeaderboardResponse> {
+    const params = new URLSearchParams({ board });
+    if (opts?.shareToken) params.set('t', opts.shareToken);
+    if (opts?.limit) params.set('limit', String(opts.limit));
+    return fetch(
+      `/api/problems/${encodeURIComponent(problemId)}/leaderboard?${params.toString()}`,
+      { credentials: 'same-origin' }
+    ).then(json<LeaderboardResponse>);
+  }
+};
+
 export const cases = {
   list(problemId: string, shareToken?: string): Promise<TestCase[]> {
     const url = shareToken

@@ -716,6 +716,86 @@ pub struct CaseResultRow {
     pub synthetic: bool,
 }
 
+// ---- Leaderboards --------------------------------------------------------
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct LeaderboardRow {
+    pub rank: i64,
+    pub submission_id: Uuid,
+    pub user_id: i64,
+    pub github_login: String,
+    pub avatar_url: Option<String>,
+    pub total_cycles: i64,
+    pub finished_at: DateTime<Utc>,
+    pub synthetic: bool,
+}
+
+/// Per-(problem, board) leaderboard. Returns the top `limit` rows by lowest
+/// `total_cycles`, plus the viewer's own row if they have a fully-passing
+/// submission outside the top N. Per user, only the best submission counts.
+///
+/// Eligibility: status='done', total_cycles IS NOT NULL (i.e. every case OK),
+/// passed = total_cases (every case matched expected_output).
+pub async fn leaderboard(
+    pool: &PgPool,
+    problem_id: &str,
+    board: &str,
+    limit: i32,
+    viewer_id: Option<i64>,
+) -> Result<Vec<LeaderboardRow>> {
+    // CTE shape:
+    //   best     — per-user best eligible submission via DISTINCT ON
+    //   ranked   — same rows + a global rank assigned by total_cycles ASC
+    // Final filter keeps top-N plus the viewer's row regardless of rank, so
+    // callers always know where they stand. NULLs in viewer_id collapse the
+    // OR branch via $5::BIGINT IS NOT NULL.
+    let rows = sqlx::query_as::<_, LeaderboardRow>(
+        r#"
+        WITH best AS (
+            SELECT DISTINCT ON (s.user_id)
+                s.id AS submission_id,
+                s.user_id,
+                s.total_cycles,
+                s.finished_at,
+                s.device_id
+            FROM submissions s
+            WHERE s.problem_id   = $1
+              AND s.board        = $2
+              AND s.status       = 'done'
+              AND s.total_cycles IS NOT NULL
+              AND s.passed       = s.total_cases
+            ORDER BY s.user_id, s.total_cycles ASC, s.finished_at ASC
+        ), ranked AS (
+            SELECT b.*,
+                   ROW_NUMBER() OVER (ORDER BY b.total_cycles ASC, b.finished_at ASC) AS rank
+            FROM best b
+        )
+        SELECT r.rank,
+               r.submission_id,
+               r.user_id,
+               u.github_login,
+               u.avatar_url,
+               r.total_cycles,
+               r.finished_at,
+               COALESCE(d.synthetic, false) AS synthetic
+        FROM ranked r
+        JOIN users u  ON u.id = r.user_id
+        LEFT JOIN devices d ON d.id = r.device_id
+        WHERE r.rank <= $3
+           OR ($4::BIGINT IS NOT NULL AND r.user_id = $4)
+        ORDER BY r.rank
+        "#,
+    )
+    .bind(problem_id)
+    .bind(board)
+    .bind(limit as i64)
+    .bind(viewer_id)
+    .fetch_all(pool)
+    .await
+    .context("leaderboard query")?;
+    Ok(rows)
+}
+
 pub async fn list_case_results(pool: &PgPool, submission_id: Uuid) -> Result<Vec<CaseResultRow>> {
     let rows = sqlx::query_as::<_, CaseResultRow>(
         "SELECT submission_id, case_ord, status, exit_code, cycles, output, passed, synthetic \

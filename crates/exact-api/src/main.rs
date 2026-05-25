@@ -23,6 +23,7 @@ mod db;
 mod dispatcher;
 mod events;
 mod hub;
+mod leaderboards;
 mod problems;
 mod runner_ws;
 mod submissions;
@@ -89,6 +90,7 @@ async fn main() -> Result<()> {
         .route("/api/me", get(auth::me))
         .merge(auth::router())
         .merge(problems::router())
+        .merge(leaderboards::router())
         .merge(submissions::router())
         .merge(admin::router())
         .merge(runner_ws::router())

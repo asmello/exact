@@ -5,12 +5,14 @@
     problems,
     cases,
     submissions,
+    leaderboards,
     ApiError,
     type Problem,
     type TestCase,
     type Submission,
     type CaseResult,
-    type Board
+    type Board,
+    type LeaderboardResponse
   } from '$lib/api';
   import { b64ToHex, decodeOutputB64, type IoSpec } from '$lib/bytes';
   import { renderMarkdown } from '$lib/markdown';
@@ -28,6 +30,28 @@
   let submission = $state<Submission | null>(null);
   let submitting = $state(false);
   let submitError = $state<string | null>(null);
+  let board_lb = $state<LeaderboardResponse | null>(null);
+
+  // The leaderboard is meaningful for public/shared problems only. Private
+  // problems are owner-only and there's never anyone else to rank against.
+  const showLeaderboard = $derived(
+    problem !== null && (problem.visibility === 'public' || problem.visibility === 'shared')
+  );
+
+  async function loadLeaderboard() {
+    if (!problem || !showLeaderboard) return;
+    try {
+      board_lb = await leaderboards.get(problem.id, board, { shareToken: shareToken });
+    } catch (e) {
+      // Leaderboard fetch is best-effort — a failure shouldn't block editing.
+      console.warn('leaderboard load failed', e);
+      board_lb = null;
+    }
+  }
+
+  $effect(() => {
+    if (showLeaderboard && problem && board) void loadLeaderboard();
+  });
 
   const ioSpec = $derived(problem?.io_spec as IoSpec | undefined);
   const inputSpec = $derived(ioSpec?.input);
@@ -129,6 +153,7 @@
             finished_at: new Date().toISOString()
           };
           finish();
+          void loadLeaderboard();
         });
 
         es.addEventListener('failed', (ev) => {
@@ -288,6 +313,59 @@
             <p class="text-sm text-zinc-300">
               Total {submission.total_cycles.toLocaleString()} cycles · {submission.passed}/{submission.total_cases}
               passed
+            </p>
+          {/if}
+        {/if}
+      </section>
+    {/if}
+
+    {#if showLeaderboard}
+      <section class="flex flex-col gap-2">
+        <div class="flex items-baseline justify-between">
+          <span class="text-xs uppercase tracking-wider text-zinc-400"
+            >Leaderboard · {board}</span
+          >
+          {#if board_lb && board_lb.entries.some((e) => e.synthetic)}
+            <span class="text-[10px] uppercase tracking-wider text-amber-400/80"
+              >cycles on synthetic devices are not comparable to real hardware</span
+            >
+          {/if}
+        </div>
+        {#if !board_lb}
+          <p class="text-sm text-zinc-500">Loading…</p>
+        {:else if board_lb.entries.length === 0}
+          <p class="text-sm text-zinc-500">No fully-passing submissions yet on this board.</p>
+        {:else}
+          <ol class="flex flex-col gap-1 font-mono text-xs">
+            {#each board_lb.entries as e (e.user_id)}
+              <li
+                class={`grid grid-cols-[3rem_1fr_auto_auto] items-center gap-3 rounded border px-3 py-2 ${
+                  board_lb.you?.user_id === e.user_id
+                    ? 'border-emerald-800 bg-emerald-950/20'
+                    : 'border-zinc-800 bg-zinc-900/40'
+                }`}
+              >
+                <span class="text-zinc-500">#{e.rank}</span>
+                <span class="flex items-baseline gap-2 truncate">
+                  <span class="text-zinc-200">@{e.github_login}</span>
+                  {#if e.synthetic}
+                    <span
+                      class="rounded border border-amber-800 bg-amber-950/30 px-1 py-px text-[9px] uppercase text-amber-400"
+                      >synth</span
+                    >
+                  {/if}
+                </span>
+                <span class="text-zinc-500" title={e.finished_at}
+                  >{new Date(e.finished_at).toLocaleDateString()}</span
+                >
+                <span class="text-zinc-300">{e.total_cycles.toLocaleString()} cy</span>
+              </li>
+            {/each}
+          </ol>
+          {@const you = board_lb.you}
+          {#if you && !board_lb.entries.some((e) => e.user_id === you.user_id)}
+            <p class="mt-1 text-xs text-zinc-400">
+              You: #{you.rank} · {you.total_cycles.toLocaleString()} cy
             </p>
           {/if}
         {/if}
