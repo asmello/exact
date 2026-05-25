@@ -175,6 +175,25 @@ export interface CreateSubmissionBody {
   board: Board;
 }
 
+export interface SubmissionHistoryRow {
+  id: string;
+  board: string;
+  status: Submission['status'];
+  total_cycles: number | null;
+  passed: number | null;
+  total_cases: number | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface UserBestRow {
+  problem_id: string;
+  board: string;
+  submission_id: string;
+  total_cycles: number;
+  rank: number;
+}
+
 export const submissions = {
   create(body: CreateSubmissionBody): Promise<Submission> {
     return fetch('/api/submissions', {
@@ -184,10 +203,21 @@ export const submissions = {
       body: JSON.stringify(body)
     }).then(json<Submission>);
   },
-  get(id: string): Promise<Submission> {
-    return fetch(`/api/submissions/${encodeURIComponent(id)}`, {
+  get(id: string, shareToken?: string): Promise<Submission> {
+    const url = shareToken
+      ? `/api/submissions/${encodeURIComponent(id)}?t=${encodeURIComponent(shareToken)}`
+      : `/api/submissions/${encodeURIComponent(id)}`;
+    return fetch(url, { credentials: 'same-origin' }).then(json<Submission>);
+  },
+  history(problemId: string, board: string, limit?: number): Promise<SubmissionHistoryRow[]> {
+    const params = new URLSearchParams({ problem_id: problemId, board });
+    if (limit) params.set('limit', String(limit));
+    return fetch(`/api/submissions?${params.toString()}`, {
       credentials: 'same-origin'
-    }).then(json<Submission>);
+    }).then(json<SubmissionHistoryRow[]>);
+  },
+  myBest(): Promise<UserBestRow[]> {
+    return fetch('/api/me/best', { credentials: 'same-origin' }).then(json<UserBestRow[]>);
   }
 };
 

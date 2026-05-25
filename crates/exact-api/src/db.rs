@@ -466,6 +466,29 @@ pub async fn finalize_submission(
     Ok(())
 }
 
+/// One user's submission history on a (problem, board), newest first.
+pub async fn list_user_submissions(
+    pool: &PgPool,
+    user_id: i64,
+    problem_id: &str,
+    board: &str,
+    limit: i32,
+) -> Result<Vec<Submission>> {
+    let rows = sqlx::query_as::<_, Submission>(&format!(
+        "SELECT {SUBMISSION_COLS} FROM submissions \
+         WHERE user_id = $1 AND problem_id = $2 AND board = $3 \
+         ORDER BY created_at DESC LIMIT $4"
+    ))
+    .bind(user_id)
+    .bind(problem_id)
+    .bind(board)
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await
+    .context("listing user submissions")?;
+    Ok(rows)
+}
+
 /// Submissions that finished building but have no runner assigned yet.
 /// Called when a runner connects: drain anything matching its board.
 pub async fn list_ready_for_board(pool: &PgPool, board: &str) -> Result<Vec<Submission>> {
@@ -714,6 +737,54 @@ pub struct CaseResultRow {
     pub output: Option<Vec<u8>>,
     pub passed: Option<bool>,
     pub synthetic: bool,
+}
+
+/// Per-(problem, board) best for a single viewer, across every problem they
+/// have a fully-passing run on. Rank is computed against everyone (window
+/// function), matching the leaderboard's tie-break (cycles ASC, finished_at
+/// ASC). Returned regardless of problem visibility — the list endpoint
+/// filters using the same predicate as /api/problems.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct UserBestRow {
+    pub problem_id: String,
+    pub board: String,
+    pub submission_id: Uuid,
+    pub total_cycles: i64,
+    pub rank: i64,
+}
+
+pub async fn user_best_per_problem(pool: &PgPool, user_id: i64) -> Result<Vec<UserBestRow>> {
+    let rows = sqlx::query_as::<_, UserBestRow>(
+        r#"
+        WITH best AS (
+            SELECT DISTINCT ON (s.problem_id, s.board, s.user_id)
+                s.problem_id, s.board, s.user_id, s.id AS submission_id,
+                s.total_cycles, s.finished_at
+            FROM submissions s
+            WHERE s.status='done'
+              AND s.total_cycles IS NOT NULL
+              AND s.passed = s.total_cases
+              AND s.problem_id IS NOT NULL
+            ORDER BY s.problem_id, s.board, s.user_id,
+                     s.total_cycles ASC, s.finished_at ASC
+        ), ranked AS (
+            SELECT b.*, ROW_NUMBER() OVER (
+                PARTITION BY problem_id, board
+                ORDER BY total_cycles ASC, finished_at ASC
+            ) AS rank
+            FROM best b
+        )
+        SELECT problem_id, board, submission_id, total_cycles, rank
+        FROM ranked
+        WHERE user_id = $1
+        ORDER BY problem_id, board
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .context("user_best_per_problem query")?;
+    Ok(rows)
 }
 
 // ---- Leaderboards --------------------------------------------------------

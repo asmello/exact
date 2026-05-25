@@ -17,6 +17,8 @@ export interface MountOptions {
   onChange?: (doc: string) => void;
   /** Cmd/Ctrl+Enter binding; return true if handled. */
   onSubmit?: () => void;
+  /** Read-only mode (used by /s/[id] permalink view). */
+  readOnly?: boolean;
 }
 
 export function mount(host: HTMLElement, opts: MountOptions): () => void {
@@ -28,39 +30,41 @@ export function mount(host: HTMLElement, opts: MountOptions): () => void {
     }
   };
 
-  const state = EditorState.create({
-    doc: opts.initialDoc,
-    extensions: [
-      lineNumbers(),
-      history(),
-      closeBrackets(),
-      indentUnit.of('    '),
-      keymap.of([
-        submitBinding,
-        ...closeBracketsKeymap,
-        ...defaultKeymap,
-        ...historyKeymap,
-        indentWithTab
-      ]),
-      rust(),
-      syntaxHighlighting(oneDarkHighlightStyle),
-      EditorView.theme(
-        {
-          '&': { height: '100%', fontSize: '13px' },
-          '.cm-scroller': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
-          '.cm-gutters': { backgroundColor: 'transparent', borderRight: '1px solid #27272a' }
-        },
-        { dark: true }
-      ),
-      EditorView.updateListener.of((update) => {
-        if (update.docChanged && opts.onChange) {
-          opts.onChange(update.state.doc.toString());
-        }
-      })
-    ]
-  });
+  const extensions = [
+    lineNumbers(),
+    history(),
+    closeBrackets(),
+    indentUnit.of('    '),
+    keymap.of([
+      submitBinding,
+      ...closeBracketsKeymap,
+      ...defaultKeymap,
+      ...historyKeymap,
+      indentWithTab
+    ]),
+    rust(),
+    syntaxHighlighting(oneDarkHighlightStyle),
+    EditorView.theme(
+      {
+        '&': { height: '100%', fontSize: '13px' },
+        '.cm-scroller': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+        '.cm-gutters': { backgroundColor: 'transparent', borderRight: '1px solid #27272a' }
+      },
+      { dark: true }
+    ),
+    EditorView.updateListener.of((update) => {
+      if (update.docChanged && opts.onChange) {
+        opts.onChange(update.state.doc.toString());
+      }
+    })
+  ];
+  if (opts.readOnly) {
+    extensions.push(EditorState.readOnly.of(true));
+  }
+
+  const state = EditorState.create({ doc: opts.initialDoc, extensions });
 
   const view = new EditorView({ state, parent: host });
-  view.focus();
+  if (!opts.readOnly) view.focus();
   return () => view.destroy();
 }

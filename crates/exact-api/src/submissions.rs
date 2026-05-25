@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -31,9 +31,22 @@ use crate::db;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/submissions", post(create))
+        .route("/api/submissions", post(create).get(history))
         .route("/api/submissions/{id}", get(detail))
         .route("/api/submissions/{id}/events", get(events_stream))
+        .route("/api/me/best", get(my_best))
+}
+
+/// GET /api/me/best — viewer's best (problem, board) entries across the
+/// catalog, with global rank. Frontend uses this to badge the problem list.
+async fn my_best(State(state): State<AppState>, AuthUser(user): AuthUser) -> Response {
+    match db::user_best_per_problem(&state.db, user.id).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => {
+            error!(error=%e, user=user.id, "user_best_per_problem");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "db error")
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -220,19 +233,13 @@ struct SubmissionDetail {
     case_results: Vec<CaseResultView>,
 }
 
-async fn load_detail(
+/// Build the full detail (submission + case_results) without any visibility
+/// check. Callers are responsible for the gate.
+async fn load_detail_raw(
     state: &AppState,
-    id: Uuid,
-    user_id: i64,
-    is_admin: bool,
-) -> Result<Option<SubmissionDetail>, anyhow::Error> {
-    let Some(sub) = db::get_submission(&state.db, id).await? else {
-        return Ok(None);
-    };
-    if sub.user_id != user_id && !is_admin {
-        return Ok(None);
-    }
-    let case_results = db::list_case_results(&state.db, id).await?;
+    sub: db::Submission,
+) -> Result<SubmissionDetail, anyhow::Error> {
+    let case_results = db::list_case_results(&state.db, sub.id).await?;
     let cases_view = case_results
         .into_iter()
         .map(|r| CaseResultView {
@@ -245,25 +252,132 @@ async fn load_detail(
             synthetic: r.synthetic,
         })
         .collect();
-    Ok(Some(SubmissionDetail {
+    Ok(SubmissionDetail {
         submission: sub,
         case_results: cases_view,
-    }))
+    })
+}
+
+/// Returns true if `viewer` may see this submission. Owner/admin always can.
+/// Otherwise the rule mirrors problems::check_read against the submission's
+/// problem (public always; shared requires matching `?t=`; private no).
+/// Playground submissions (no problem_id) are owner-only.
+async fn submission_visible(
+    state: &AppState,
+    sub: &db::Submission,
+    viewer: Option<&AuthUser>,
+    share_token: Option<&str>,
+) -> Result<bool, anyhow::Error> {
+    let is_admin = viewer.map(|AuthUser(u)| u.is_admin).unwrap_or(false);
+    let is_owner = viewer.map(|AuthUser(u)| u.id == sub.user_id).unwrap_or(false);
+    if is_admin || is_owner {
+        return Ok(true);
+    }
+    let Some(problem_id) = sub.problem_id.as_deref() else {
+        return Ok(false); // playground submissions are owner-only.
+    };
+    let Some(problem) = db::get_problem(&state.db, problem_id).await? else {
+        return Ok(false);
+    };
+    Ok(match problem.visibility.as_str() {
+        "public" => true,
+        "shared" => problem.share_token.as_deref() == share_token,
+        _ => false,
+    })
+}
+
+#[derive(Deserialize)]
+struct DetailQuery {
+    #[serde(default)]
+    t: Option<String>,
 }
 
 async fn detail(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-    AuthUser(user): AuthUser,
+    Query(q): Query<DetailQuery>,
+    viewer: Option<AuthUser>,
 ) -> Response {
-    match load_detail(&state, id, user.id, user.is_admin).await {
-        Ok(Some(d)) => Json(d).into_response(),
-        Ok(None) => err(StatusCode::NOT_FOUND, "submission not found"),
+    let sub = match db::get_submission(&state.db, id).await {
+        Ok(Some(s)) => s,
+        Ok(None) => return err(StatusCode::NOT_FOUND, "submission not found"),
         Err(e) => {
             error!(error=%e, %id, "get submission");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "db error");
+        }
+    };
+    let visible = match submission_visible(&state, &sub, viewer.as_ref(), q.t.as_deref()).await {
+        Ok(v) => v,
+        Err(e) => {
+            error!(error=%e, %id, "check submission visibility");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "db error");
+        }
+    };
+    if !visible {
+        return err(StatusCode::NOT_FOUND, "submission not found");
+    }
+    match load_detail_raw(&state, sub).await {
+        Ok(d) => Json(d).into_response(),
+        Err(e) => {
+            error!(error=%e, %id, "load submission detail");
             err(StatusCode::INTERNAL_SERVER_ERROR, "db error")
         }
     }
+}
+
+#[derive(Deserialize)]
+struct HistoryQuery {
+    problem_id: String,
+    board: String,
+    #[serde(default)]
+    limit: Option<i32>,
+}
+
+#[derive(Serialize)]
+struct HistoryRow {
+    id: Uuid,
+    board: String,
+    status: String,
+    total_cycles: Option<i64>,
+    passed: Option<i32>,
+    total_cases: Option<i32>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    finished_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// GET /api/submissions?problem_id=&board=&limit= — viewer's own submission
+/// history for one (problem, board). Always scoped to the authenticated user;
+/// admins viewing other users' history would use a different (future) admin
+/// endpoint.
+async fn history(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Query(q): Query<HistoryQuery>,
+) -> Response {
+    let limit = q.limit.unwrap_or(20).clamp(1, 100);
+    let rows = match db::list_user_submissions(&state.db, user.id, &q.problem_id, &q.board, limit)
+        .await
+    {
+        Ok(rs) => rs,
+        Err(e) => {
+            error!(error=%e, user=user.id, problem=%q.problem_id, "list user submissions");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "db error");
+        }
+    };
+    let view: Vec<HistoryRow> = rows
+        .into_iter()
+        .map(|s| HistoryRow {
+            id: s.id,
+            board: s.board,
+            status: s.status,
+            total_cycles: s.total_cycles,
+            passed: s.passed,
+            total_cases: s.total_cases,
+            created_at: s.created_at,
+            finished_at: s.finished_at,
+        })
+        .collect();
+    Json(view).into_response()
 }
 
 /// SSE: emits a one-shot `snapshot` event with the full detail on connect,
@@ -275,9 +389,22 @@ async fn events_stream(
     Path(id): Path<Uuid>,
     AuthUser(user): AuthUser,
 ) -> Response {
-    let snapshot = match load_detail(&state, id, user.id, user.is_admin).await {
-        Ok(Some(d)) => d,
+    // Live events are owner-only: only the submitter is watching their own
+    // build/run progress. Non-owner read access is through the detail
+    // endpoint, which returns a final snapshot.
+    let sub = match db::get_submission(&state.db, id).await {
+        Ok(Some(s)) => s,
         Ok(None) => return err(StatusCode::NOT_FOUND, "submission not found"),
+        Err(e) => {
+            error!(error=%e, %id, "load submission for SSE");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "db error");
+        }
+    };
+    if sub.user_id != user.id && !user.is_admin {
+        return err(StatusCode::NOT_FOUND, "submission not found");
+    }
+    let snapshot = match load_detail_raw(&state, sub).await {
+        Ok(d) => d,
         Err(e) => {
             error!(error=%e, %id, "snapshot for SSE");
             return err(StatusCode::INTERNAL_SERVER_ERROR, "db error");

@@ -12,10 +12,12 @@
     type Submission,
     type CaseResult,
     type Board,
-    type LeaderboardResponse
+    type LeaderboardResponse,
+    type SubmissionHistoryRow
   } from '$lib/api';
-  import { b64ToHex, decodeOutputB64, type IoSpec } from '$lib/bytes';
+  import { decodeOutputB64, type IoSpec } from '$lib/bytes';
   import { renderMarkdown } from '$lib/markdown';
+  import CaseResultsPanel from '$lib/components/CaseResultsPanel.svelte';
 
   const id = $derived(page.params.id ?? '');
   const shareToken = $derived(page.url.searchParams.get('t') ?? undefined);
@@ -31,6 +33,24 @@
   let submitting = $state(false);
   let submitError = $state<string | null>(null);
   let board_lb = $state<LeaderboardResponse | null>(null);
+  let history = $state<SubmissionHistoryRow[]>([]);
+
+  async function loadHistory() {
+    if (!problem) return;
+    try {
+      history = await submissions.history(problem.id, board, 10);
+    } catch (e) {
+      // 401 (anon) is fine — history is logged-in only. Log others.
+      if (!(e instanceof ApiError && e.status === 401)) {
+        console.warn('history load failed', e);
+      }
+      history = [];
+    }
+  }
+
+  $effect(() => {
+    if (problem && board) void loadHistory();
+  });
 
   // The leaderboard is meaningful for public/shared problems only. Private
   // problems are owner-only and there's never anyone else to rank against.
@@ -154,6 +174,7 @@
           };
           finish();
           void loadLeaderboard();
+          void loadHistory();
         });
 
         es.addEventListener('failed', (ev) => {
@@ -260,62 +281,7 @@
             <span class="text-zinc-500">finished {submission.finished_at}</span>
           {/if}
         </div>
-        {#if submission.status === 'failed' && submission.build_log}
-          <pre
-            class="max-h-96 overflow-auto rounded border border-rose-900 bg-rose-950/30 px-3 py-2 font-mono text-xs text-rose-200 whitespace-pre-wrap">{submission.build_log}</pre>
-        {/if}
-
-        {#if submission.case_results && submission.case_results.length > 0}
-          <ul class="flex flex-col gap-1 font-mono text-xs">
-            {#each submission.case_results as r (r.case_ord)}
-              <li
-                class="grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-3 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2"
-              >
-                <span class="text-zinc-500">#{r.case_ord}</span>
-                {#if r.status === 'OK'}
-                  {#if r.passed === false}
-                    <span class="rounded border border-rose-800 bg-rose-950/40 px-1.5 py-0.5 text-[10px] uppercase text-rose-400"
-                      >WRONG</span
-                    >
-                  {:else if r.passed === true}
-                    <span class="rounded border border-emerald-800 bg-emerald-950/40 px-1.5 py-0.5 text-[10px] uppercase text-emerald-400"
-                      >PASS</span
-                    >
-                  {:else}
-                    <span class="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] uppercase text-zinc-400"
-                      >OK</span
-                    >
-                  {/if}
-                {:else}
-                  <span class="rounded border border-rose-800 bg-rose-950/40 px-1.5 py-0.5 text-[10px] uppercase text-rose-400"
-                    >{r.status}</span
-                  >
-                {/if}
-                <span class="truncate text-zinc-400">
-                  {#if r.output !== null}
-                    out: {decodeOutputB64(r.output, outputSpec) || '(empty)'}
-                  {/if}
-                </span>
-                <span class="text-zinc-300">
-                  {r.cycles !== null ? `${r.cycles.toLocaleString()} cy` : '—'}
-                </span>
-                {#if r.synthetic}
-                  <span class="rounded border border-amber-800 bg-amber-950/30 px-1.5 py-0.5 text-[10px] uppercase text-amber-400"
-                    >synth</span
-                  >
-                {:else}
-                  <span></span>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-          {#if submission.total_cycles !== null && submission.status === 'done'}
-            <p class="text-sm text-zinc-300">
-              Total {submission.total_cycles.toLocaleString()} cycles · {submission.passed}/{submission.total_cases}
-              passed
-            </p>
-          {/if}
-        {/if}
+        <CaseResultsPanel {submission} {outputSpec} />
       </section>
     {/if}
 
@@ -355,8 +321,10 @@
                     >
                   {/if}
                 </span>
-                <span class="text-zinc-500" title={e.finished_at}
-                  >{new Date(e.finished_at).toLocaleDateString()}</span
+                <a
+                  href={`/s/${e.submission_id}${shareToken ? `?t=${shareToken}` : ''}`}
+                  class="text-zinc-500 hover:text-zinc-300"
+                  title={e.finished_at}>{new Date(e.finished_at).toLocaleDateString()}</a
                 >
                 <span class="text-zinc-300">{e.total_cycles.toLocaleString()} cy</span>
               </li>
@@ -369,6 +337,46 @@
             </p>
           {/if}
         {/if}
+      </section>
+    {/if}
+
+    {#if history.length > 0}
+      <section class="flex flex-col gap-2">
+        <span class="text-xs uppercase tracking-wider text-zinc-400">Your history · {board}</span>
+        <ul class="flex flex-col gap-1 font-mono text-xs">
+          {#each history as h (h.id)}
+            <li
+              class="grid grid-cols-[1fr_auto_auto_auto] items-center gap-3 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2"
+            >
+              <a
+                href={`/s/${h.id}${shareToken ? `?t=${shareToken}` : ''}`}
+                class="truncate text-zinc-300 hover:text-zinc-100"
+                title={h.created_at}
+              >
+                {new Date(h.created_at).toLocaleString()}
+              </a>
+              <span
+                class={`rounded border px-1.5 py-0.5 text-[10px] uppercase ${
+                  h.status === 'done'
+                    ? h.passed === h.total_cases
+                      ? 'border-emerald-800 bg-emerald-950/40 text-emerald-400'
+                      : 'border-amber-800 bg-amber-950/40 text-amber-400'
+                    : h.status === 'failed'
+                      ? 'border-rose-800 bg-rose-950/40 text-rose-400'
+                      : 'border-zinc-700 text-zinc-400'
+                }`}>{h.status}</span
+              >
+              <span class="text-zinc-500">
+                {h.passed !== null && h.total_cases !== null
+                  ? `${h.passed}/${h.total_cases}`
+                  : '—'}
+              </span>
+              <span class="text-zinc-300">
+                {h.total_cycles !== null ? `${h.total_cycles.toLocaleString()} cy` : '—'}
+              </span>
+            </li>
+          {/each}
+        </ul>
       </section>
     {/if}
 
