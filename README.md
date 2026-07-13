@@ -1,15 +1,22 @@
 # exact
 
 A LeetCode-style judge that compiles user-submitted Rust snippets, runs
-them on real Cortex-M hardware via [`mono-os`](../mono-os), and reports
+them on real Cortex-M hardware via [`mono-os`](https://github.com/asmello/mono-os), and reports
 cycle-accurate per-case timing. The judging layer that sits in front of
 mono-os's runtime.
 
 This repo is the **frontend + service tier**. The Cortex-M runtime,
 `userlib` shims, and `monolink` host loader live in the sibling
-[`mono-os`](../mono-os) checkout. `exact` consumes that as a path
+[`mono-os`](https://github.com/asmello/mono-os) checkout. `exact` consumes that as a path
 dependency during dev and as a Git dependency once the Railway Dockerfile
 lands.
+
+> **Work in progress.** exact is the judging/web half of a two-repo project —
+> the Cortex-M runtime it drives lives in
+> [`mono-os`](https://github.com/asmello/mono-os). The core submit → compile →
+> run → leaderboard flow works end-to-end (see [Status](#status)), but the
+> project is early and under active development: schemas, APIs, and deployment
+> are still in flux and none of it is production-hardened yet.
 
 ## Layout
 
